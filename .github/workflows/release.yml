@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      vsix: ${{ steps.meta.outputs.vsix }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - id: meta
+        name: Verify tag matches package.json and CHANGELOG.md
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          node -e '
+            const fs = require("node:fs");
+            const version = process.argv[1];
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            if (pkg.version !== version) {
+              console.error(`Tag version (${version}) does not match package.json (${pkg.version}).`);
+              process.exit(1);
+            }
+            const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+            if (!new RegExp(`^## \\[${escaped}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m").test(changelog)) {
+              console.error(`CHANGELOG.md must contain "## [${version}] - YYYY-MM-DD" before releasing.`);
+              process.exit(1);
+            }
+          ' "$TAG_VERSION"
+          VSIX="open-settings-sync-${TAG_VERSION}.vsix"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "vsix=$VSIX" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm run package
+
+      - name: Generate SHA256 checksum
+        env:
+          VSIX: ${{ steps.meta.outputs.vsix }}
+        run: sha256sum "$VSIX" > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            ${{ steps.meta.outputs.vsix }}
+            SHA256SUMS.txt
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VSIX: ${{ needs.build.outputs.vsix }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$VSIX" SHA256SUMS.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$VSIX" SHA256SUMS.txt \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+
+  publish-marketplace:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX: ${{ needs.build.outputs.vsix }}
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            npx --yes @vscode/vsce@4.1.1 publish --packagePath "$VSIX"
+          else
+            echo "::warning::VSCE_PAT is not configured; skipped Visual Studio Marketplace publish."
+          fi
+
+  publish-openvsx:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+      - name: Publish to Open VSX Registry (Cursor / VSCodium)
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          VSIX: ${{ needs.build.outputs.vsix }}
+        run: |
+          if [ -n "$OVSX_PAT" ]; then
+            npx --yes ovsx@1.4.0 publish "$VSIX"
+          else
+            echo "::warning::OVSX_PAT is not configured; skipped Open VSX publish."
+          fi

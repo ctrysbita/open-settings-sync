@@ -1,0 +1,136 @@
+{
+  "name": "open-settings-sync",
+  "displayName": "Open Settings Sync",
+  "description": "Sync portable user settings and user-installed extensions across VS Code and Cursor through Git.",
+  "icon": "media/icon.png",
+  "version": "0.1.0",
+  "publisher": "ctrysbita",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/ctrysbita/open-settings-sync#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ctrysbita/open-settings-sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ctrysbita/open-settings-sync/issues"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "settings",
+    "sync",
+    "git",
+    "cursor",
+    "vscode",
+    "extensions",
+    "profile"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "check": "npm run format:check && npm run lint && npm run build && npm test",
+    "compile:test": "node -e \"require('node:fs').rmSync('build',{recursive:true,force:true})\" && tsc -p tsconfig.test.json",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint --error-on-warnings .",
+    "package": "vsce package",
+    "test": "npm run compile:test && node --test build/test/*.test.js",
+    "vscode:prepublish": "npm run build",
+    "test:editor": "npm run build && npm run compile:test && node scripts/smoke-editor.cjs"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "openSettingsSync.configure",
+        "title": "Configure",
+        "category": "Open Settings Sync"
+      },
+      {
+        "command": "openSettingsSync.sync",
+        "title": "Sync Now",
+        "category": "Open Settings Sync"
+      },
+      {
+        "command": "openSettingsSync.restore",
+        "title": "Restore Settings Backup",
+        "category": "Open Settings Sync"
+      },
+      {
+        "command": "openSettingsSync.showLog",
+        "title": "Show Log",
+        "category": "Open Settings Sync"
+      }
+    ],
+    "configuration": {
+      "title": "Open Settings Sync",
+      "properties": {
+        "openSettingsSync.git.remote": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Git repository URL. Uses your existing SSH agent or Git credential helper. Do not embed credentials."
+        },
+        "openSettingsSync.git.branch": {
+          "type": "string",
+          "default": "main",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,199}$",
+          "patternErrorMessage": "Use a valid Git branch name starting with a letter or number.",
+          "scope": "machine",
+          "description": "Branch to sync. It is created if the repository has no such branch."
+        },
+        "openSettingsSync.profile": {
+          "type": "string",
+          "default": "main",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+          "patternErrorMessage": "Use letters, numbers, _ or - (up to 64 characters).",
+          "scope": "machine",
+          "description": "Name of the shared settings and extension collection."
+        },
+        "openSettingsSync.ignoredSettings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "description": "Setting names, nested keys, or dotted paths to keep local. A nested match excludes the whole setting. Rules from the default and current profiles are combined and support case-insensitive * wildcards."
+        },
+        "openSettingsSync.ignoredExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "description": "Extension identifiers to keep local. Rules from the default and current profiles are combined. Supports case-insensitive * wildcards. Built-in extensions are always excluded."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.8",
+    "@types/node": "^22.19.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/vscode": "1.95.0",
+    "@vscode/vsce": "4.1.1",
+    "typescript": "5.9.3"
+  }
+}

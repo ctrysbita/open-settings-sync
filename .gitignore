@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build and package outputs
+/dist/
+/build/
+/*.vsix
+*.tsbuildinfo
+
+# Logs and caches
+*.log
+npm-debug.log*
+.npm/
+/.editor-sync-npm-cache/
+
+# Test artifacts
+/.test-editor/
+.vscode-test/
+coverage/
+
+# Environment and editor files
+.env
+.env.*.local
+.env.local
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
