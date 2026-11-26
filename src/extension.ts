@@ -63,8 +63,9 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           const message = error instanceof Error ? error.message : "Unknown sync failure.";
           output.error(formatFailureForLog(error));
-          const choice = await vscode.window.showErrorMessage(message, "Show Log");
-          if (choice === "Show Log") output.show();
+          void vscode.window.showErrorMessage(
+            `${message} See Output → ${output.name} for details.`,
+          );
         } finally {
           running.delete(controller);
         }
@@ -185,14 +186,9 @@ export function activate(context: vscode.ExtensionContext): void {
           failedIds.length <= 3
             ? failedIds.join(", ")
             : `${failedIds.slice(0, 3).join(", ")} and ${failedIds.length - 3} more`;
-        void vscode.window
-          .showWarningMessage(
-            `Settings synchronized; ${extLabel}, ${failedIds.length} failed (${summary}). Add unavailable extensions to openSettingsSync.ignoredExtensions to skip them.`,
-            "Show Log",
-          )
-          .then((choice) => {
-            if (choice === "Show Log") output.show();
-          });
+        void vscode.window.showWarningMessage(
+          `Settings synchronized; ${extLabel}, ${failedIds.length} failed (${summary}). Add unavailable extensions to openSettingsSync.ignoredExtensions to skip them.`,
+        );
       } else {
         void vscode.window.showInformationMessage(`Settings synchronized; ${extLabel}.`);
       }
@@ -236,9 +232,6 @@ export function activate(context: vscode.ExtensionContext): void {
       "Settings restored. Extension installations and Git history were not changed.",
     );
   });
-  context.subscriptions.push(
-    vscode.commands.registerCommand("openSettingsSync.showLog", () => output.show()),
-  );
 }
 
 function formatFailureForLog(error: unknown): string {

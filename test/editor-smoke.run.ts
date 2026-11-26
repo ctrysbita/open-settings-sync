@@ -22,10 +22,12 @@ export async function run(): Promise<void> {
   assert.ok(extension, "development extension is registered");
   await reviewPreview();
   await extension.activate();
-  const commands = await vscode.commands.getCommands(true);
-  for (const name of ["configure", "sync", "restore", "showLog"]) {
-    assert.ok(commands.includes(`openSettingsSync.${name}`));
-  }
+  const commands = await vscode.commands.getCommands();
+  assert.deepEqual(commands.filter((name) => name.startsWith("openSettingsSync.")).sort(), [
+    "openSettingsSync.configure",
+    "openSettingsSync.restore",
+    "openSettingsSync.sync",
+  ]);
   for (const name of ["applyPreview", "cancelPreview"]) {
     assert.ok(commands.includes(`_openSettingsSync.${name}`));
   }

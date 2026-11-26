@@ -68,11 +68,6 @@
         "command": "openSettingsSync.restore",
         "title": "Restore Settings Backup",
         "category": "Open Settings Sync"
-      },
-      {
-        "command": "openSettingsSync.showLog",
-        "title": "Show Log",
-        "category": "Open Settings Sync"
       }
     ],
     "configuration": {

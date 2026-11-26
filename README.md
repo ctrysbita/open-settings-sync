@@ -67,7 +67,7 @@ Before modifying your settings file, Open Settings Sync stores a complete local 
 
 - Run **Open Settings Sync: Restore Settings Backup** (`openSettingsSync.restore`) to restore any saved backup for the active settings file (the current file is backed up before restoring).
 - Backups stay strictly local and are never uploaded to Git. Restoring settings does not roll back extension installations or Git history.
-- Run **Open Settings Sync: Show Log** (`openSettingsSync.showLog`) to inspect diagnostic output. Settings values and credentials are never logged.
+- After running an extension command, open **View → Output** and select **Open Settings Sync** from the channel dropdown to read the diagnostic log. Settings values and credentials are never logged.
 
 ## Development & Testing
 
