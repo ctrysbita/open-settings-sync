@@ -6,7 +6,12 @@ import type { SettingChange } from "../sync/merge";
 import { isInternalExtensionId } from "../sync/policy";
 import type { LocalState } from "../sync/session";
 import { isValidExtensionId, type Settings } from "../sync/snapshot";
-import { installedExtensions, installInProfile, type InventoryOptions } from "./inventory";
+import {
+  installedExtensions,
+  installInProfile,
+  type InventoryOptions,
+  uninstallInProfile,
+} from "./inventory";
 import { parseSettings, patchSettings } from "./settings-document";
 import { openUserSettings } from "./source";
 
@@ -15,8 +20,9 @@ export class EditorHost {
   private readonly cli: InventoryOptions;
   constructor(
     private readonly source: SettingsSource,
-    private readonly builtin: ReadonlySet<string>,
+    private readonly protectedExtensions: ReadonlySet<string>,
     private readonly signal: AbortSignal,
+    private readonly manifests: readonly unknown[] = [],
   ) {
     this.cli = { executable: process.execPath, appRoot: vscode.env.appRoot, source, signal };
   }
@@ -26,7 +32,7 @@ export class EditorHost {
     return (await this.document()).getText();
   }
 
-  /** Lightweight verification path when a sync modifies settings without installing extensions. */
+  /** Lightweight verification path when a sync only modifies settings. */
   async readSettings(): Promise<Settings> {
     return parseSettings(await this.settingsText());
   }
@@ -44,20 +50,33 @@ export class EditorHost {
     };
   }
 
-  /** Defends the installation boundary even if a caller bypasses merge policy. */
   async installExtension(id: string): Promise<void> {
-    if (
-      !isValidExtensionId(id) ||
-      this.builtin.has(id.toLowerCase()) ||
-      isInternalExtensionId(id)
-    ) {
-      throw new SyncFailure(
-        "invalid-data",
-        "Refusing to install an internal or invalid extension.",
-      );
+    this.assertUserExtension(id);
+    await installInProfile(this.cli, id);
+  }
+
+  /** Refuses to cascade an uninstall into extensions outside the reviewed plan. */
+  async uninstallExtension(id: string, approved: ReadonlySet<string>): Promise<void> {
+    this.assertUserExtension(id);
+    const allowed = new Set(
+      [...approved].filter((item) => this.isUserExtension(item)).map((item) => item.toLowerCase()),
+    );
+    await uninstallInProfile(this.cli, id, allowed, this.manifests);
+  }
+
+  private assertUserExtension(id: string): void {
+    if (!this.isUserExtension(id)) {
+      throw new SyncFailure("invalid-data", "Refusing to modify a protected or invalid extension.");
     }
     this.signal.throwIfAborted();
-    await installInProfile(this.cli, id);
+  }
+
+  private isUserExtension(id: string): boolean {
+    return (
+      isValidExtensionId(id) &&
+      !this.protectedExtensions.has(id.toLowerCase()) &&
+      !isInternalExtensionId(id)
+    );
   }
 
   async applySettings(

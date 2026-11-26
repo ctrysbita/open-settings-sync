@@ -58,6 +58,21 @@ test("the first sync combines disjoint settings and preserves all user extension
   assert.equal(merged.conflicts.length, 0);
 });
 
+test("extension additions and removals on either side merge independently per ID", () => {
+  const merged = mergeSnapshots(
+    snapshot({}, ["user.both-removed", "user.keep", "user.local-removed", "user.remote-removed"]),
+    snapshot({}, ["user.both-added", "user.keep", "user.local-added", "user.remote-removed"]),
+    snapshot({}, ["user.both-added", "user.keep", "user.local-removed", "user.remote-added"]),
+  );
+  assert.deepEqual(merged.conflicts, []);
+  assert.deepEqual(merged.snapshot.extensions, [
+    "user.both-added",
+    "user.keep",
+    "user.local-added",
+    "user.remote-added",
+  ]);
+});
+
 test("object and array order are meaningful and null is distinct from deletion", () => {
   assert.notEqual(formatJson({ b: 2, a: 1 }), formatJson({ a: 1, b: 2 }));
   assert.equal(settingChanges({ key: { a: 1, b: 2 } }, { key: { b: 2, a: 1 } }).length, 1);

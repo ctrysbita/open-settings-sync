@@ -9,7 +9,7 @@ Sync portable user settings and user-installed extensions across **VS Code** and
 - **Cross-editor & clean**: Works identically in VS Code and Cursor desktop profiles without touching editor SQLite databases or credential stores.
 - **Three-way settings merge**: Merges independent edits, propagates deletions, prompts on value or key-order conflicts, and previews changes before writing.
 - **JSONC-friendly**: Preserves your comments, formatting, trailing commas, key order, and ignored settings.
-- **Additive extension sync**: Installs missing user-installed extensions, skips built-ins per editor, and never uninstalls local extensions.
+- **Three-way extension sync** combines both inventories on the first sync. After that, removing a previously synced extension from Git proposes a local uninstall. Uninstalling it locally proposes removing its ID from Git. The review lists removals before you apply them. Built-in and ignored extensions stay local.
 - **Safe Git & local backups**: Uses an isolated bare Git cache (hooks disabled, `--force-with-lease`), updates only `.settings-sync/<collection>.json`, and keeps up to 20 local backups per settings file.
 
 ## Quick Start
@@ -40,6 +40,7 @@ Settings live under `openSettingsSync.*` (`scope: "machine"`):
 
 - **Wildcards & inheritance**: Ignore lists support case-insensitive `*` wildcards. Default profile ignore lists (and connection settings, until overridden) apply to named profiles automatically.
 - **Exclusions & secrets**: Sync settings, machine-scoped settings, and built-in extensions are excluded automatically. Sensitive user settings are **not** guessed — exclude any key or dotted path (e.g. `rest-client.defaultHeaders.X-API-Key`) via `openSettingsSync.ignoredSettings`.
+- **Extension packs** are uninstalled only when the review includes every installed member the editor would remove with the pack. If a member needs to stay installed, the sync log identifies it.
 
 ## Commands
 

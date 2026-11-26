@@ -45,6 +45,48 @@ test("two machines keep independent settings edits and converge through a real G
   assert.equal((await a.persistence.backups(a.settingsUri)).length, 1);
 });
 
+test("a local uninstall reaches Git and the other profile only after each review is accepted", async (t) => {
+  const sandbox = await gitSandbox(t);
+  const first = new MemoryEditor({}, ["user.keep", "user.remove"]);
+  const second = new MemoryEditor({});
+  const a = environment(sandbox, "a", first);
+  const b = environment(sandbox, "b", second);
+  await synchronize(a);
+  await synchronize(b);
+  const previous = await b.repository.read();
+  first.extensions.delete("user.remove");
+  let approve = false;
+  a.interaction.review = async (plan) => {
+    assert.deepEqual(plan.gitRemovedExtensions, ["user.remove"]);
+    assert.deepEqual(plan.installExtensions, []);
+    assert.deepEqual(plan.uninstallExtensions, []);
+    return approve;
+  };
+  assert.equal((await synchronize(a)).status, "cancelled");
+  assert.deepEqual(await a.repository.read(), previous);
+  approve = true;
+  await synchronize(a);
+  const published = await a.repository.read();
+  assert.deepEqual(published.snapshot?.extensions, ["user.keep"]);
+
+  approve = false;
+  b.interaction.review = async (plan) => {
+    assert.deepEqual(plan.uninstallExtensions, ["user.remove"]);
+    assert.equal(plan.upload, false);
+    return approve;
+  };
+  assert.equal((await synchronize(b)).status, "cancelled");
+  assert.deepEqual([...second.extensions], ["user.keep", "user.remove"]);
+  assert.deepEqual(await b.persistence.baseline(b.identity), previous.snapshot);
+  approve = true;
+  const result = await synchronize(b);
+  assert.equal(result.uninstalledExtensions, 1);
+  assert.deepEqual([...second.extensions], ["user.keep"]);
+  assert.deepEqual(await b.persistence.baseline(b.identity), published.snapshot);
+  assert.equal((await synchronize(b)).status, "unchanged");
+  assert.deepEqual(await b.repository.read(), published);
+});
+
 test("cancelling a reviewed plan leaves Git local settings and baseline untouched", async (t) => {
   const sandbox = await gitSandbox(t);
   const editor = new MemoryEditor({ font: 14 });
@@ -147,6 +189,92 @@ test("cancelling during extension installation stops remaining installs without 
   assert.equal(await env.persistence.baseline(env.identity), undefined);
 });
 
+test("a failed uninstall is retried without adding it back to Git or repeating successful removals", async (t) => {
+  const sandbox = await gitSandbox(t);
+  const editor = new MemoryEditor({}, ["user.blocked", "user.removed"]);
+  const env = environment(sandbox, "client", editor);
+  await synchronize(env);
+  await env.repository.publish(await env.repository.read(), emptySnapshot());
+  editor.failUninstallation = "user.blocked";
+  const result = await synchronize(env);
+  assert.equal(result.uninstalledExtensions, 1);
+  assert.deepEqual(
+    result.failedExtensions.map(({ id, operation }) => [id, operation]),
+    [["user.blocked", "uninstall"]],
+  );
+  assert.deepEqual((await env.persistence.baseline(env.identity))?.extensions, ["user.blocked"]);
+  const originalHead = (await env.repository.read()).head;
+  editor.failUninstallation = undefined;
+  env.interaction.review = async (plan) => {
+    assert.deepEqual(plan.uninstallExtensions, ["user.blocked"]);
+    assert.equal(plan.upload, false);
+    return true;
+  };
+  assert.equal((await synchronize(env)).uninstalledExtensions, 1);
+  assert.deepEqual(await env.persistence.baseline(env.identity), emptySnapshot());
+  assert.equal((await env.repository.read()).head, originalHead);
+});
+
+test("an uninstall that reports success but leaves the extension installed does not advance the baseline", async (t) => {
+  const sandbox = await gitSandbox(t);
+  const editor = new MemoryEditor({}, ["user.kept"]);
+  const env = environment(sandbox, "client", editor);
+  await synchronize(env);
+  const previous = await env.repository.read();
+  await env.repository.publish(previous, emptySnapshot());
+  editor.uninstallExtension = async () => {};
+  await assert.rejects(synchronize(env), { code: "verification-failed" });
+  assert.deepEqual(await env.persistence.baseline(env.identity), previous.snapshot);
+});
+
+test("restoring an extension on Git during review prevents the pending uninstall", async (t) => {
+  const sandbox = await gitSandbox(t);
+  const editor = new MemoryEditor({}, ["user.restored"]);
+  const env = environment(sandbox, "client", editor);
+  await synchronize(env);
+  const original = (await editor.read()).snapshot;
+  await env.repository.publish(await env.repository.read(), emptySnapshot());
+  env.interaction.review = async (plan) => {
+    assert.deepEqual(plan.uninstallExtensions, ["user.restored"]);
+    await env.repository.publish(await env.repository.read(), original);
+    return true;
+  };
+  await assert.rejects(synchronize(env), { code: "remote-changed" });
+  assert.deepEqual((await editor.read()).snapshot, original);
+  assert.deepEqual(await env.persistence.baseline(env.identity), original);
+});
+
+test("extension removals preserve ignored, built-in and sync extensions on their respective sides", async (t) => {
+  const sandbox = await gitSandbox(t);
+  const protectedIds = [
+    "ctrysbita.open-settings-sync",
+    "private.local",
+    "vendor.bundled",
+    "vscode.git",
+  ];
+  const editor = new MemoryEditor({}, [...protectedIds, "user.remove"]);
+  const env = environment(sandbox, "client", editor);
+  await env.persistence.saveBaseline(env.identity, (await editor.read()).snapshot);
+  const remote = { ...emptySnapshot(), extensions: ["private.remote"] };
+  await env.repository.publish(await env.repository.read(), remote);
+  env.interaction.review = async (plan) => {
+    assert.deepEqual(plan.uninstallExtensions, ["user.remove"]);
+    assert.deepEqual(plan.installExtensions, []);
+    assert.equal(plan.upload, false);
+    return true;
+  };
+  await synchronize({
+    ...env,
+    policy: {
+      ...env.policy,
+      builtinExtensions: ["vendor.bundled"],
+      ignoredExtensions: ["private.*"],
+    },
+  });
+  assert.deepEqual([...editor.extensions].sort(), protectedIds);
+  assert.deepEqual((await env.repository.read()).snapshot, remote);
+});
+
 test("a concurrent remote update during preview cannot be overwritten", async (t) => {
   const sandbox = await gitSandbox(t);
   const seed = sandbox.client("seed");
@@ -185,7 +313,7 @@ for (const missing of ["branch", "collection"] as const) {
     const sibling = sandbox.client("sibling", "work");
     if (missing === "collection") await sibling.publish(await sibling.read(), emptySnapshot());
     const startingHead = (await sibling.read()).head;
-    const editor = new MemoryEditor({ font: 14 });
+    const editor = new MemoryEditor({ font: 14 }, ["user.keep"]);
     const env = environment(sandbox, "a", editor);
     await synchronize(env);
     const baseline = await env.persistence.baseline(env.identity);
@@ -200,6 +328,8 @@ for (const missing of ["branch", "collection"] as const) {
       assert.equal(plan.recreateCollection, true);
       assert.deepEqual(plan.settings, []);
       assert.deepEqual(plan.gitSettings, [{ key: "font", before: undefined, after: 18 }]);
+      assert.deepEqual(plan.uninstallExtensions, []);
+      assert.deepEqual(plan.gitExtensions, ["user.keep"]);
       return approve;
     };
     assert.equal((await synchronize(env)).status, "cancelled");
@@ -417,6 +547,7 @@ test("verification failures report mismatched keys without leaking setting value
       readSettings: async () => ({ "editor.fontSize": 99 }),
       applySettings: (expected, changes, order) => editor.applySettings(expected, changes, order),
       installExtension: (id) => editor.installExtension(id),
+      uninstallExtension: (id) => editor.uninstallExtension(id),
     },
   };
   await assert.rejects(synchronize(broken), (error: unknown) => {
@@ -434,6 +565,7 @@ class MemoryEditor {
   text: string;
   readonly extensions: Set<string>;
   failInstallation: string | undefined;
+  failUninstallation: string | undefined;
   failWith: Error | undefined;
   applied = 0;
   readCount = 0;
@@ -464,6 +596,11 @@ class MemoryEditor {
   async installExtension(id: string): Promise<void> {
     if (id === this.failInstallation) throw this.failWith ?? new Error("installation failed");
     this.extensions.add(id);
+  }
+
+  async uninstallExtension(id: string): Promise<void> {
+    if (id === this.failUninstallation) throw new Error("uninstallation failed");
+    this.extensions.delete(id);
   }
 
   async applySettings(

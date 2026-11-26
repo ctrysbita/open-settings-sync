@@ -97,12 +97,18 @@ export class Review
     const action = plan.recreateCollection ? "Recreate on Git" : "Sync";
     const question = plan.recreateCollection
       ? "The previously synchronized Git collection is missing. Recreate it from this profile?"
-      : "Apply this settings sync?";
+      : "Apply this sync?";
     const detail =
       `Profile: ${editorProfile}. ${plan.settings.length} local setting changes, ${plan.installExtensions.length} extension installations.` +
+      (plan.uninstallExtensions.length
+        ? `\nUninstall from this profile (${plan.uninstallExtensions.length}): ${summarizeExtensions(plan.uninstallExtensions)}. Extensions applied to all profiles are removed from all profiles.`
+        : "") +
       (plan.settingsOrder ? "\nReorder local settings." : "") +
-      (plan.upload
+      (plan.recreateCollection || plan.gitSettings.length > 0 || plan.gitExtensions.length > 0
         ? `\nUpload ${plan.gitSettings.length} setting changes, ${plan.gitExtensions.length} extensions to Git.`
+        : "") +
+      (plan.gitRemovedExtensions.length
+        ? `\nRemove from Git (${plan.gitRemovedExtensions.length}): ${summarizeExtensions(plan.gitRemovedExtensions)}.`
         : "") +
       (plan.gitSettingsOrder ? "\nUpdate the setting order on Git." : "");
     const choice = await untilCancelled(
@@ -135,6 +141,7 @@ export class Review
         })),
         settingsOrder: plan.settingsOrder,
         installExtensions: plan.installExtensions,
+        uninstallExtensions: plan.uninstallExtensions,
         updateGit: plan.upload,
         recreateCollection: plan.recreateCollection,
         gitSettings: plan.gitSettings.map((change) => ({
@@ -144,6 +151,7 @@ export class Review
         })),
         gitSettingsOrder: plan.gitSettingsOrder,
         gitExtensions: plan.gitExtensions,
+        gitRemovedExtensions: plan.gitRemovedExtensions,
         keepLocal: { settings: plan.excludedSettings, extensions: plan.excludedExtensions },
       },
       null,
@@ -230,6 +238,11 @@ function untilCancelled<T>(choice: Thenable<T>, signal: AbortSignal): Promise<T 
 
 function represented(value: Json | undefined): unknown {
   return value === undefined ? { present: false } : { present: true, value };
+}
+
+function summarizeExtensions(ids: readonly string[], limit = 10): string {
+  if (ids.length <= limit) return ids.join(", ");
+  return `${ids.slice(0, limit).join(", ")}, and ${ids.length - limit} more (see Preview)`;
 }
 
 function summarize(conflict: SettingConflict, side: "local" | "remote"): string {

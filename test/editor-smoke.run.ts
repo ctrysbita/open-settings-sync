@@ -8,7 +8,8 @@ import {
   builtinInventory,
   installedExtensions,
   installInProfile,
-  machineSettingsFromDirectory,
+  machineSettings,
+  userExtensionManifests,
 } from "../src/editor/inventory";
 import { Review } from "../src/editor/review";
 import { parseSettings } from "../src/editor/settings-document";
@@ -105,7 +106,7 @@ export async function run(): Promise<void> {
   if (!profile) assert.deepEqual(before.snapshot.extensions, ["sync-smoke.fixture"]);
   assert.ok(!before.snapshot.extensions.includes("sync-smoke.installed-fixture"));
   assert.ok(
-    (await machineSettingsFromDirectory(isolatedSource.extensionsDirectory)).includes(
+    machineSettings(await userExtensionManifests(isolatedSource.extensionsDirectory)).includes(
       "syncSmoke.executable",
     ),
   );
@@ -147,6 +148,10 @@ export async function run(): Promise<void> {
     );
   }
   await assert.rejects(host.installExtension("vscode.git"), { code: "invalid-data" });
+  await assert.rejects(host.installExtension("Publisher.VSIX"), { code: "process-failed" });
+  await assert.rejects(host.uninstallExtension("vscode.git", new Set(["vscode.git"])), {
+    code: "invalid-data",
+  });
   await host.applySettings(await host.settingsText(), [
     { key: "syncSmoke.last", before: undefined, after: true },
     { key: "syncSmoke.first", before: undefined, after: true },
@@ -158,23 +163,58 @@ export async function run(): Promise<void> {
     order,
   );
   const cli = { executable: process.execPath, appRoot: vscode.env.appRoot, source: isolatedSource };
+  const fixtureId = "sync-smoke.installed-fixture";
   await installInProfile(cli, vsix);
   assert.deepEqual(
     (await host.read()).snapshot.extensions,
-    [...before.snapshot.extensions, "sync-smoke.installed-fixture"].sort(),
+    [...before.snapshot.extensions, fixtureId].sort(),
   );
+  const uninstallHost = new EditorHost(
+    isolatedSource,
+    new Set(builtin.extensions),
+    new AbortController().signal,
+    [
+      {
+        publisher: "sync-smoke",
+        name: "installed-fixture",
+        version: "0.1.0",
+        extensionPack: ["sync-smoke.fixture"],
+      },
+      ...(await userExtensionManifests(expectedExtensions)),
+    ],
+  );
+  const defaultCli = { ...cli, source: { ...isolatedSource, editorProfile: "" } };
   if (profile) {
-    const defaultInventory = await installedExtensions({
-      ...cli,
-      source: { ...isolatedSource, editorProfile: "" },
-    });
-    assert.ok(!defaultInventory.includes("sync-smoke.installed-fixture"));
+    assert.ok(!(await installedExtensions(defaultCli)).includes(fixtureId));
+    await installInProfile(defaultCli, vsix);
     const key = "openSettingsSync.ignoredExtensions";
     await host.applySettings(await host.settingsText(), [{ key, before: ["named.*"], after: [] }]);
     assert.deepEqual((await readConfiguration(source)).ignoredExtensions, ["shared.*"]);
     await host.applySettings(await host.settingsText(), [{ key, before: [], after: null }]);
     await assert.rejects(readConfiguration(source), { code: "invalid-configuration" });
+  } else {
+    await assert.rejects(
+      uninstallHost.uninstallExtension("sync-smoke.fixture", new Set(["sync-smoke.fixture"])),
+      /outside the sync plan/,
+    );
+    const protectedMemberHost = new EditorHost(
+      isolatedSource,
+      new Set([...builtin.extensions, fixtureId]),
+      new AbortController().signal,
+      await userExtensionManifests(expectedExtensions),
+    );
+    await assert.rejects(
+      protectedMemberHost.uninstallExtension(
+        "sync-smoke.fixture",
+        new Set(["sync-smoke.fixture", fixtureId]),
+      ),
+      /outside the sync plan/,
+    );
+    assert.ok((await installedExtensions(cli)).includes(fixtureId));
   }
+  await uninstallHost.uninstallExtension(fixtureId, new Set([fixtureId]));
+  assert.deepEqual(await installedExtensions(cli), before.snapshot.extensions);
+  if (profile) assert.ok((await installedExtensions(defaultCli)).includes(fixtureId));
   console.log("EDITOR_SMOKE_PASSED");
 }
 
@@ -198,15 +238,19 @@ async function reviewPreview(): Promise<void> {
   const plan: SyncPlan = {
     settings: [],
     installExtensions: [],
+    uninstallExtensions: ["user.old"],
     upload: true,
     recreateCollection: false,
     gitSettings: [{ key: "editor.fontSize", before: 15, after: 16 }],
     gitExtensions: [],
+    gitRemovedExtensions: ["user.removed"],
     excludedSettings: [],
     excludedExtensions: [],
   };
   const review = new Review(async (_message, options, ...actions) => {
     assert.equal(options.modal, true, "no decision should rely on a disappearing notification");
+    assert.match(options.detail ?? "", /Uninstall from this profile.*user\.old/);
+    assert.match(options.detail ?? "", /Remove from Git.*user\.removed/);
     prompts.push(actions);
     return actions.includes("Preview") ? "Preview" : recreateChoice;
   });
@@ -237,6 +281,8 @@ async function reviewPreview(): Promise<void> {
       const preview = JSON.parse(document.getText());
       assert.equal(preview.recreateCollection, recreateCollection);
       assert.equal(preview.gitSettings[0].after.value, 16);
+      assert.deepEqual(preview.uninstallExtensions, ["user.old"]);
+      assert.deepEqual(preview.gitRemovedExtensions, ["user.removed"]);
       const actions = review.provideCodeLenses(document).map((lens) => lens.command);
       assert.deepEqual(
         actions.map((action) => [action?.title, action?.command]),

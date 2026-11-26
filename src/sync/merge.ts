@@ -1,4 +1,4 @@
-/** Three-way settings merge and additive extension wishes. */
+/** Three-way merge of settings and user-installed extension IDs. */
 import { orderedObject } from "./json";
 import { type Json, type Settings, type Snapshot, setting } from "./snapshot";
 
@@ -80,10 +80,32 @@ export function mergeSnapshots(
     snapshot: {
       version: 1,
       settings: orderedObject(entries),
-      extensions: [...new Set([...local.extensions, ...remote.extensions])].sort(),
+      extensions: mergeExtensions(base.extensions, local.extensions, remote.extensions),
     },
     conflicts,
   };
+}
+
+/** Lists the IDs to add and remove to reach the target inventory. */
+export function extensionChanges(before: readonly string[], after: readonly string[]) {
+  const previous = new Set(before);
+  const next = new Set(after);
+  return {
+    added: after.filter((id) => !previous.has(id)),
+    removed: before.filter((id) => !next.has(id)),
+  };
+}
+
+function mergeExtensions(
+  base: readonly string[],
+  local: readonly string[],
+  remote: readonly string[],
+) {
+  const merged = new Set(remote);
+  const changes = extensionChanges(base, local);
+  for (const id of changes.added) merged.add(id);
+  for (const id of changes.removed) merged.delete(id);
+  return [...merged].sort();
 }
 
 /** Includes deletions and changes in the priority of ordered settings. */

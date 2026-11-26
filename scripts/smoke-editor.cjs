@@ -43,6 +43,7 @@ if (!executable) {
     JSON.stringify({
       name: "fixture",
       publisher: "sync-smoke",
+      extensionPack: ["sync-smoke.installed-fixture"],
       version: "1.0.0",
       engines: { vscode: "^1.95.0" },
       contributes: {

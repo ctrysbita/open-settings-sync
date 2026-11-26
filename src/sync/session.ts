@@ -1,6 +1,7 @@
 /** Sync orchestration over explicit capabilities; no editor, filesystem, or Git dependencies. */
 import { SyncFailure } from "./failure";
 import {
+  extensionChanges,
   mergeSnapshots,
   type Resolutions,
   type SettingChange,
@@ -17,7 +18,7 @@ export interface RemoteState {
   readonly snapshot: Snapshot | null;
 }
 
-/** Raw text detects edits made while a preview or installation is in progress. */
+/** Raw text detects edits made while a sync is in progress. */
 export interface LocalState {
   readonly snapshot: Snapshot;
   readonly settingsText: string;
@@ -28,11 +29,14 @@ export interface SyncPlan {
   readonly settings: readonly SettingChange[];
   readonly settingsOrder?: readonly string[] | undefined;
   readonly installExtensions: readonly string[];
+  readonly uninstallExtensions: readonly string[];
   readonly upload: boolean;
   readonly recreateCollection: boolean;
   readonly gitSettings: readonly SettingChange[];
   readonly gitSettingsOrder?: readonly string[] | undefined;
+  /** IDs to add to the Git snapshot. */
   readonly gitExtensions: readonly string[];
+  readonly gitRemovedExtensions: readonly string[];
   readonly excludedSettings: readonly string[];
   readonly excludedExtensions: readonly string[];
 }
@@ -51,6 +55,8 @@ export interface SyncEnvironment {
       order?: readonly string[],
     ): Promise<void>;
     installExtension(id: string): Promise<void>;
+    /** May remove only IDs approved for uninstallation, including extension pack members. */
+    uninstallExtension(id: string, approved: ReadonlySet<string>): Promise<void>;
   };
   readonly repository: {
     read(): Promise<RemoteState>;
@@ -72,18 +78,20 @@ export interface SyncEnvironment {
   report?(message: string): void;
 }
 
-/** An extension installation that failed without blocking settings or remaining extensions. */
-export interface ExtensionInstallFailure {
+interface ExtensionFailure {
   readonly id: string;
+  readonly operation: "install" | "uninstall";
   readonly error: unknown;
 }
 
-/** Extension installations cannot be rolled back atomically with settings or a Git push. */
+/** Counts verified local changes. Individual CLI failures can be retried on the next sync. */
 export interface SyncResult {
   readonly status: "cancelled" | "unchanged" | "synced";
   readonly settings: number;
+  /** Number of extensions installed in this profile. */
   readonly extensions: number;
-  readonly failedExtensions: readonly ExtensionInstallFailure[];
+  readonly uninstalledExtensions: number;
+  readonly failedExtensions: readonly ExtensionFailure[];
 }
 
 /** Records a baseline only after publication and verified local settings writes succeed. */
@@ -112,28 +120,32 @@ export async function synchronize(env: SyncEnvironment): Promise<SyncResult> {
   const recreateCollection = previous !== undefined && remote.snapshot === null;
   const gitSettings = settingChanges(remoteSnapshot.settings, target.settings);
   const gitSettingsOrder = settingOrderChange(remoteSnapshot.settings, target.settings);
-  const gitExtensions = target.extensions.filter((id) => !remoteSnapshot.extensions.includes(id));
+  const localExtensions = extensionChanges(local.extensions, merged.snapshot.extensions);
+  const gitExtensions = extensionChanges(remoteSnapshot.extensions, target.extensions);
   const plan: SyncPlan = {
     settings: settingChanges(local.settings, merged.snapshot.settings),
     settingsOrder: settingOrderChange(local.settings, merged.snapshot.settings),
-    installExtensions: merged.snapshot.extensions.filter(
-      (id) => !initial.snapshot.extensions.includes(id),
-    ),
+    installExtensions: localExtensions.added,
+    uninstallExtensions: localExtensions.removed,
     upload:
       recreateCollection ||
       gitSettings.length > 0 ||
       gitSettingsOrder !== undefined ||
-      gitExtensions.length > 0,
+      gitExtensions.added.length > 0 ||
+      gitExtensions.removed.length > 0,
     recreateCollection,
     gitSettings,
     gitSettingsOrder,
-    gitExtensions,
+    gitExtensions: gitExtensions.added,
+    gitRemovedExtensions: gitExtensions.removed,
     excludedSettings: policy.excludedSettings,
     excludedExtensions: policy.excludedExtensions,
   };
   const writesSettings = plan.settings.length > 0 || plan.settingsOrder !== undefined;
-  const changed = plan.upload || writesSettings || plan.installExtensions.length > 0;
-  const failedExtensions: ExtensionInstallFailure[] = [];
+  const writesExtensions = plan.installExtensions.length > 0 || plan.uninstallExtensions.length > 0;
+  const changed = plan.upload || writesSettings || writesExtensions;
+  const baselineExtensions = new Set(merged.snapshot.extensions);
+  const failedExtensions: ExtensionFailure[] = [];
   if (changed) {
     if (!(await env.interaction.review(plan))) return cancelled();
     env.check();
@@ -170,35 +182,35 @@ export async function synchronize(env: SyncEnvironment): Promise<SyncResult> {
       env.report?.("Applying local settings...");
       await env.editor.applySettings(initial.settingsText, plan.settings, plan.settingsOrder);
     }
-    for (const [index, id] of plan.installExtensions.entries()) {
+    if (writesExtensions) {
+      const failures = await applyExtensionChanges(env, plan);
       env.check();
-      env.report?.(`Installing extension (${index + 1}/${plan.installExtensions.length}): ${id}`);
-      try {
-        await env.editor.installExtension(id);
-      } catch (error) {
-        if (isFatalInstallError(error)) throw error;
-        env.check();
-        failedExtensions.push({ id, error });
-      }
-    }
-    env.check();
-    const failedIds = new Set(failedExtensions.map((item) => item.id));
-    if (plan.installExtensions.length > 0) {
       env.report?.("Verifying synchronized state...");
       const verified = policy.select((await env.editor.read()).snapshot);
-      const missingExtensions = merged.snapshot.extensions.filter(
-        (id) => !failedIds.has(id) && !verified.extensions.includes(id),
+      const installed = new Set(verified.extensions);
+      // Keep the observed membership for failed operations so the next sync retries in the same direction.
+      for (const failure of failures) {
+        const present = installed.has(failure.id);
+        if (present === baselineExtensions.has(failure.id)) continue;
+        failedExtensions.push(failure);
+        if (present) baselineExtensions.add(failure.id);
+        else baselineExtensions.delete(failure.id);
+      }
+      const missingExtensions = [...baselineExtensions].filter((id) => !installed.has(id));
+      const stillInstalled = plan.uninstallExtensions.filter(
+        (id) => installed.has(id) && !baselineExtensions.has(id),
       );
       const settingsMismatch = describeSettingsMismatch(
         merged.snapshot.settings,
         verified.settings,
       );
-      if (settingsMismatch || missingExtensions.length > 0) {
+      if (settingsMismatch || missingExtensions.length > 0 || stillInstalled.length > 0) {
         const details = [
           settingsMismatch,
           missingExtensions.length > 0
             ? `Missing extensions: ${missingExtensions.join(", ")}`
             : undefined,
+          stillInstalled.length > 0 ? `Still installed: ${stillInstalled.join(", ")}` : undefined,
         ]
           .filter(Boolean)
           .join("; ");
@@ -209,6 +221,7 @@ export async function synchronize(env: SyncEnvironment): Promise<SyncResult> {
         );
       }
     } else if (writesSettings) {
+      env.check();
       env.report?.("Verifying synchronized settings...");
       const verifiedSettings = env.editor.readSettings
         ? policy.select({
@@ -228,23 +241,46 @@ export async function synchronize(env: SyncEnvironment): Promise<SyncResult> {
     }
   }
   env.check();
-  const failedIds = new Set(failedExtensions.map((item) => item.id));
-  const baselineSnapshot: Snapshot =
-    failedIds.size > 0
-      ? {
-          version: 1,
-          settings: merged.snapshot.settings,
-          extensions: merged.snapshot.extensions.filter((id) => !failedIds.has(id)),
-        }
-      : merged.snapshot;
   if (remote.snapshot !== null || plan.upload)
-    await env.persistence.saveBaseline(env.identity, baselineSnapshot);
+    await env.persistence.saveBaseline(env.identity, {
+      ...merged.snapshot,
+      extensions: [...baselineExtensions].sort(),
+    });
   return {
     status: changed ? "synced" : "unchanged",
     settings: plan.settings.length,
-    extensions: plan.installExtensions.length - failedExtensions.length,
+    extensions: plan.installExtensions.filter((id) => baselineExtensions.has(id)).length,
+    uninstalledExtensions: plan.uninstallExtensions.filter((id) => !baselineExtensions.has(id))
+      .length,
     failedExtensions,
   };
+}
+
+async function applyExtensionChanges(
+  env: SyncEnvironment,
+  plan: SyncPlan,
+): Promise<ExtensionFailure[]> {
+  const failures: ExtensionFailure[] = [];
+  const approved = new Set(plan.uninstallExtensions);
+  for (const [operation, ids] of [
+    ["install", plan.installExtensions],
+    ["uninstall", plan.uninstallExtensions],
+  ] as const) {
+    const verb = operation === "install" ? "Installing" : "Uninstalling";
+    for (const [index, id] of ids.entries()) {
+      env.check();
+      env.report?.(`${verb} extension (${index + 1}/${ids.length}): ${id}`);
+      try {
+        if (operation === "install") await env.editor.installExtension(id);
+        else await env.editor.uninstallExtension(id, approved);
+      } catch (error) {
+        if (isFatalExtensionError(error)) throw error;
+        env.check();
+        failures.push({ id, operation, error });
+      }
+    }
+  }
+  return failures;
 }
 
 function describeSettingsMismatch(expected: Settings, actual: Settings): string | undefined {
@@ -253,11 +289,17 @@ function describeSettingsMismatch(expected: Settings, actual: Settings): string 
   return keys.length > 0 ? `Settings differ: ${keys.join(", ")}` : "Setting key order differs";
 }
 
-function isFatalInstallError(error: unknown): boolean {
+function isFatalExtensionError(error: unknown): boolean {
   if (error instanceof SyncFailure) return error.code !== "process-failed";
   return error instanceof Error && error.name === "AbortError";
 }
 
 function cancelled(): SyncResult {
-  return { status: "cancelled", settings: 0, extensions: 0, failedExtensions: [] };
+  return {
+    status: "cancelled",
+    settings: 0,
+    extensions: 0,
+    uninstalledExtensions: 0,
+    failedExtensions: [],
+  };
 }

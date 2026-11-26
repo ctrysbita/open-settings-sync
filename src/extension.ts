@@ -3,11 +3,7 @@ import { join } from "node:path";
 import * as vscode from "vscode";
 import { configure, readConfiguration } from "./editor/configuration";
 import { EditorHost } from "./editor/host";
-import {
-  builtinInventory,
-  machineSettings,
-  machineSettingsFromDirectory,
-} from "./editor/inventory";
+import { builtinInventory, machineSettings, userExtensionManifests } from "./editor/inventory";
 import { Review } from "./editor/review";
 import { activeSource } from "./editor/source";
 import { GitRepository } from "./git/repository";
@@ -110,7 +106,17 @@ export function activate(context: vscode.ExtensionContext): void {
         const source = await activeSource(context, store, "use");
         const config = await readConfiguration(source);
         const builtin = await builtinInventory(vscode.env.appRoot);
-        const host = new EditorHost(source, new Set(builtin.extensions), signal);
+        const manifests = [
+          ...vscode.extensions.all.map((extension) => extension.packageJSON as unknown),
+          ...(await userExtensionManifests(source.extensionsDirectory, (message) =>
+            output.warn(message),
+          )),
+        ];
+        const protectedExtensions = new Set([
+          ...builtin.extensions,
+          context.extension.id.toLowerCase(),
+        ]);
+        const host = new EditorHost(source, protectedExtensions, signal, manifests);
         const identity = JSON.stringify({
           remote: config.remote,
           branch: config.branch,
@@ -134,15 +140,7 @@ export function activate(context: vscode.ExtensionContext): void {
           },
           policy: {
             builtinExtensions: builtin.extensions,
-            machineSettings: [
-              ...builtin.machineSettings,
-              ...machineSettings(
-                vscode.extensions.all.map((extension) => extension.packageJSON as unknown),
-              ),
-              ...(await machineSettingsFromDirectory(source.extensionsDirectory, (message) =>
-                output.warn(message),
-              )),
-            ],
+            machineSettings: [...builtin.machineSettings, ...machineSettings(manifests)],
             ignoredSettings: config.ignoredSettings,
             ignoredExtensions: config.ignoredExtensions,
             ownExtension: context.extension.id,
@@ -168,29 +166,27 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
     );
     output.info(
-      `Sync ${result.status}; settings=${result.settings}; extensions=${result.extensions}; failedExtensions=${result.failedExtensions.length}.`,
+      `Sync ${result.status}. Settings changed: ${result.settings}. Extensions installed: ${result.extensions}, uninstalled: ${result.uninstalledExtensions}, failed: ${result.failedExtensions.length}.`,
     );
     for (const failure of result.failedExtensions) {
       output.warn(
-        `Extension install skipped (${failure.id}): ${formatFailureForLog(failure.error)}`,
+        `Extension ${failure.operation} failed (${failure.id}): ${formatFailureForLog(failure.error)}`,
       );
     }
     if (result.status === "synced") {
-      const extLabel =
-        result.extensions === 1
-          ? "1 extension installed"
-          : `${result.extensions} extensions installed`;
+      const summary = `Settings synchronized. Extensions installed: ${result.extensions}, uninstalled: ${result.uninstalledExtensions}.`;
       if (result.failedExtensions.length > 0) {
         const failedIds = result.failedExtensions.map((item) => item.id);
-        const summary =
+        const names =
           failedIds.length <= 3
             ? failedIds.join(", ")
             : `${failedIds.slice(0, 3).join(", ")} and ${failedIds.length - 3} more`;
+        const label = failedIds.length === 1 ? "extension change" : "extension changes";
         void vscode.window.showWarningMessage(
-          `Settings synchronized; ${extLabel}, ${failedIds.length} failed (${summary}). Add unavailable extensions to openSettingsSync.ignoredExtensions to skip them.`,
+          `${summary} ${failedIds.length} ${label} failed (${names}). See Output → ${output.name} for details and run Sync Now to retry.`,
         );
       } else {
-        void vscode.window.showInformationMessage(`Settings synchronized; ${extLabel}.`);
+        void vscode.window.showInformationMessage(summary);
       }
     } else if (result.status === "unchanged") {
       void vscode.window.showInformationMessage(

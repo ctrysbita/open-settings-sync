@@ -110,7 +110,7 @@ export function createPolicy(options: PolicyOptions, sides: readonly Snapshot[])
       return {
         version: 1,
         settings: orderedObject([...entries, ...remaining]),
-        extensions: [...new Set([...remote.extensions, ...merged.extensions])].sort(),
+        extensions: [...remote.extensions.filter(excludedExtension), ...merged.extensions].sort(),
       };
     },
   };
