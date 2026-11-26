@@ -6,8 +6,13 @@ import type { SyncPlan } from "../sync/session";
 import type { Json } from "../sync/snapshot";
 
 /** Preview documents contain user data only in memory, never in logs or Git commits. */
-export class Review implements vscode.TextDocumentContentProvider, vscode.Disposable {
-  private readonly documents = new Map<string, string>();
+export class Review
+  implements vscode.TextDocumentContentProvider, vscode.CodeLensProvider, vscode.Disposable
+{
+  private readonly previews = new Map<
+    string,
+    { content: string; finish: (apply: boolean) => void }
+  >();
   constructor(
     private readonly choose: (
       message: string,
@@ -17,11 +22,36 @@ export class Review implements vscode.TextDocumentContentProvider, vscode.Dispos
   ) {}
 
   provideTextDocumentContent(uri: vscode.Uri): string {
-    return this.documents.get(uri.toString()) ?? "";
+    return this.previews.get(uri.toString())?.content ?? "";
+  }
+
+  /** Keeps both actions at the top of the exact preview they control. */
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    if (!this.previews.has(document.uri.toString())) return [];
+    const top = new vscode.Range(0, 0, 0, 0);
+    return [
+      new vscode.CodeLens(top, {
+        title: "Apply Sync",
+        command: "_openSettingsSync.applyPreview",
+        arguments: [document.uri],
+      }),
+      new vscode.CodeLens(top, {
+        title: "Cancel Sync",
+        command: "_openSettingsSync.cancelPreview",
+        arguments: [document.uri],
+      }),
+    ];
   }
 
   dispose(): void {
-    this.documents.clear();
+    for (const preview of this.previews.values()) preview.finish(false);
+    this.previews.clear();
+  }
+
+  /** Resolves only the pending review for the targeted preview tab. */
+  respondToPreview(apply: boolean, resource?: unknown): void {
+    const uri = resource === undefined ? vscode.window.activeTextEditor?.document.uri : resource;
+    if (uri instanceof vscode.Uri) this.previews.get(uri.toString())?.finish(apply);
   }
 
   /** Cancelling any conflict choice cancels the whole operation without writes. */
@@ -61,8 +91,40 @@ export class Review implements vscode.TextDocumentContentProvider, vscode.Dispos
     return resolutions;
   }
 
+  /** Returns true only after the user approves this plan. Closing the preview cancels it. */
   async review(plan: SyncPlan, editorProfile: string, signal: AbortSignal): Promise<boolean> {
     signal.throwIfAborted();
+    const action = plan.recreateCollection ? "Recreate on Git" : "Sync";
+    const question = plan.recreateCollection
+      ? "The previously synchronized Git collection is missing. Recreate it from this profile?"
+      : "Apply this settings sync?";
+    const detail =
+      `Profile: ${editorProfile}. ${plan.settings.length} local setting changes, ${plan.installExtensions.length} extension installations.` +
+      (plan.settingsOrder ? "\nReorder local settings." : "") +
+      (plan.upload
+        ? `\nUpload ${plan.gitSettings.length} setting changes, ${plan.gitExtensions.length} extensions to Git.`
+        : "") +
+      (plan.gitSettingsOrder ? "\nUpdate the setting order on Git." : "");
+    const choice = await untilCancelled(
+      this.choose(question, { modal: true, detail }, action, "Preview"),
+      signal,
+    );
+    if (choice !== "Preview") return choice === action;
+    if (signal.aborted) return false;
+    const apply = await this.showPreview(plan, editorProfile, signal);
+    if (!apply || signal.aborted) return false;
+    if (!plan.recreateCollection) return true;
+    return (
+      (await untilCancelled(this.choose(question, { modal: true, detail }, action), signal)) ===
+      action
+    );
+  }
+
+  private async showPreview(
+    plan: SyncPlan,
+    editorProfile: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const content = JSON.stringify(
       {
         editorProfile,
@@ -91,58 +153,39 @@ export class Review implements vscode.TextDocumentContentProvider, vscode.Dispos
       scheme: "open-settings-sync-preview",
       path: `/sync-${randomUUID()}.json`,
     });
-    this.documents.set(uri.toString(), content);
+    const target = uri.toString();
+    const decision = new Promise<boolean>((finish) =>
+      this.previews.set(target, { content, finish }),
+    );
+    const tabs = vscode.window.tabGroups.onDidChangeTabs(({ closed }) => {
+      if (closed.some((tab) => isPreviewTab(tab, target)) && previewTabs(target).length === 0) {
+        this.respondToPreview(false, uri);
+      }
+    });
     try {
-      const action = plan.recreateCollection ? "Recreate on Git" : "Sync";
-      const question = plan.recreateCollection
-        ? "The previously synchronized Git collection is missing. Recreate it from this profile?"
-        : "Apply this settings sync?";
-      const detail =
-        `Profile: ${editorProfile}. ${plan.settings.length} local setting changes, ${plan.installExtensions.length} extension installations.` +
-        (plan.settingsOrder ? "\nReorder local settings." : "") +
-        (plan.upload
-          ? `\nUpload ${plan.gitSettings.length} setting changes, ${plan.gitExtensions.length} extensions to Git.`
-          : "") +
-        (plan.gitSettingsOrder ? "\nUpdate the setting order on Git." : "");
-      const choice = await untilCancelled(
-        this.choose(question, { modal: true, detail }, action, "Preview"),
-        signal,
-      );
-      if (choice !== "Preview") return choice === action;
-      signal.throwIfAborted();
-      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), {
-        preview: true,
-      });
+      const document = await vscode.workspace.openTextDocument(uri);
       if (signal.aborted) return false;
-      return (
-        (await untilCancelled(
-          this.choose(question, { modal: false }, action, "Cancel"),
-          signal,
-        )) === action
-      );
+      await vscode.window.showTextDocument(document, { preview: false });
+      return (await untilCancelled(decision, signal)) === true;
     } finally {
-      await closePreviewTabs(uri);
-      this.documents.delete(uri.toString());
+      tabs.dispose();
+      this.previews.delete(target);
+      const remaining = previewTabs(target);
+      if (remaining.length) {
+        await vscode.window.tabGroups.close(remaining, true).then(undefined, () => false);
+      }
     }
   }
 }
 
-async function closePreviewTabs(uri: vscode.Uri): Promise<void> {
-  const target = uri.toString();
-  const matching: vscode.Tab[] = [];
-  for (const group of vscode.window.tabGroups?.all ?? []) {
-    for (const tab of group.tabs) {
-      if (tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === target) {
-        matching.push(tab);
-      }
-    }
-  }
-  if (matching.length > 0) {
-    await vscode.window.tabGroups.close(matching, true).then(
-      () => undefined,
-      () => undefined,
-    );
-  }
+function isPreviewTab(tab: vscode.Tab, target: string): boolean {
+  return tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === target;
+}
+
+function previewTabs(target: string): vscode.Tab[] {
+  return vscode.window.tabGroups.all.flatMap((group) =>
+    group.tabs.filter((tab) => isPreviewTab(tab, target)),
+  );
 }
 
 function pickOne<T extends vscode.QuickPickItem>(

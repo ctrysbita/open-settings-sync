@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { dirname, join, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import { readConfiguration } from "../src/editor/configuration";
 import { EditorHost } from "../src/editor/host";
@@ -25,6 +26,9 @@ export async function run(): Promise<void> {
   for (const name of ["configure", "sync", "restore", "showLog"]) {
     assert.ok(commands.includes(`openSettingsSync.${name}`));
   }
+  for (const name of ["applyPreview", "cancelPreview"]) {
+    assert.ok(commands.includes(`_openSettingsSync.${name}`));
+  }
   const expectedData = process.env.VSCODE_TEST_USER_DATA_DIRECTORY;
   const expectedExtensions = process.env.VSCODE_TEST_EXTENSIONS_DIRECTORY;
   const vsix = process.env.VSCODE_TEST_VSIX;
@@ -48,6 +52,8 @@ export async function run(): Promise<void> {
   const disabled = typeof autoUpdate?.defaultValue === "string" ? "off" : false;
   if (autoUpdate?.globalValue !== disabled)
     await extensionSettings.update("autoUpdate", disabled, vscode.ConfigurationTarget.Global);
+
+  if (!profile) await configureDefaultProfile(document);
 
   const store = new FileStore(join(sandbox, "bindings"));
   const context = {
@@ -170,35 +176,119 @@ export async function run(): Promise<void> {
   console.log("EDITOR_SMOKE_PASSED");
 }
 
+async function configureDefaultProfile(settings: vscode.TextDocument): Promise<void> {
+  assert.equal(parseSettings(settings.getText())["openSettingsSync.profile"], undefined);
+  await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({ content: "" }));
+  const configured = vscode.commands.executeCommand("openSettingsSync.configure").then(() => true);
+  const deadline = Date.now() + 30_000;
+  // The isolated fixture supplies valid defaults for every prompt. Accept them as they appear.
+  while (!(await Promise.race([configured, delay(100, false)]))) {
+    assert.ok(Date.now() < deadline, "Configure must finish in a responsive editor window");
+    await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+  }
+  assert.equal(parseSettings(settings.getText())["openSettingsSync.profile"], "main");
+  assert.equal(settings.isDirty, false);
+}
+
 async function reviewPreview(): Promise<void> {
-  const choices: boolean[] = [];
+  const prompts: string[][] = [];
+  let recreateChoice: string | undefined;
   const plan: SyncPlan = {
     settings: [],
     installExtensions: [],
     upload: true,
-    recreateCollection: true,
-    gitSettings: [],
+    recreateCollection: false,
+    gitSettings: [{ key: "editor.fontSize", before: 15, after: 16 }],
     gitExtensions: [],
     excludedSettings: [],
     excludedExtensions: [],
   };
   const review = new Review(async (_message, options, ...actions) => {
-    choices.push(options.modal === true);
-    assert.ok(actions.includes("Recreate on Git"));
-    assert.ok(!actions.includes("Sync"));
-    if (options.modal) return "Preview";
-    const document = vscode.window.activeTextEditor?.document;
-    assert.equal(document?.uri.scheme, "open-settings-sync-preview");
-    assert.equal(JSON.parse(document.getText()).recreateCollection, true);
-    return "Cancel";
+    assert.equal(options.modal, true, "no decision should rely on a disappearing notification");
+    prompts.push(actions);
+    return actions.includes("Preview") ? "Preview" : recreateChoice;
   });
   const registration = vscode.workspace.registerTextDocumentContentProvider(
     "open-settings-sync-preview",
     review,
   );
+
+  async function exercise(
+    decide: (document: vscode.TextDocument, controller: AbortController) => unknown,
+    recreateCollection = false,
+  ): Promise<boolean> {
+    const controller = new AbortController();
+    let subscription: vscode.Disposable | undefined;
+    const opened = new Promise<vscode.TextDocument>((resolve) => {
+      subscription = vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (editor?.document.uri.scheme === "open-settings-sync-preview") resolve(editor.document);
+      });
+    });
+    const result = review.review({ ...plan, recreateCollection }, "Default", controller.signal);
+    try {
+      const document = await Promise.race([
+        opened,
+        result.then(() => {
+          throw new Error("Review finished before the preview opened");
+        }),
+      ]);
+      const preview = JSON.parse(document.getText());
+      assert.equal(preview.recreateCollection, recreateCollection);
+      assert.equal(preview.gitSettings[0].after.value, 16);
+      const actions = review.provideCodeLenses(document).map((lens) => lens.command);
+      assert.deepEqual(
+        actions.map((action) => [action?.title, action?.command]),
+        [
+          ["Apply Sync", "_openSettingsSync.applyPreview"],
+          ["Cancel Sync", "_openSettingsSync.cancelPreview"],
+        ],
+      );
+      assert.ok(
+        actions.every((action) => action?.arguments?.[0].toString() === document.uri.toString()),
+      );
+      await decide(document, controller);
+      return await result;
+    } finally {
+      controller.abort();
+      subscription?.dispose();
+    }
+  }
+
   try {
-    assert.equal(await review.review(plan, "Default", new AbortController().signal), false);
-    assert.deepEqual(choices, [true, false]);
+    let previous: vscode.Uri | undefined;
+    assert.equal(
+      await exercise(async (document) => {
+        previous = document.uri;
+        const readme = vscode.Uri.file(resolve(__dirname, "..", "..", "README.md"));
+        await vscode.window.showTextDocument(readme, { preview: true });
+        review.respondToPreview(false);
+        await vscode.window.showTextDocument(document);
+        review.respondToPreview(true);
+      }),
+      true,
+    );
+    assert.deepEqual(prompts.splice(0), [["Sync", "Preview"]]);
+
+    assert.equal(
+      await exercise((document) => {
+        assert.ok(previous);
+        review.respondToPreview(true, previous);
+        review.respondToPreview(false, document.uri);
+      }),
+      false,
+    );
+    assert.equal(
+      await exercise(() => vscode.commands.executeCommand("workbench.action.closeActiveEditor")),
+      false,
+    );
+    assert.equal(await exercise((_document, controller) => controller.abort()), false);
+
+    prompts.length = 0;
+    const apply = (document: vscode.TextDocument) => review.respondToPreview(true, document.uri);
+    assert.equal(await exercise(apply, true), false);
+    assert.deepEqual(prompts.splice(0), [["Recreate on Git", "Preview"], ["Recreate on Git"]]);
+    recreateChoice = "Recreate on Git";
+    assert.equal(await exercise(apply, true), true);
   } finally {
     registration.dispose();
     review.dispose();

@@ -26,6 +26,13 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     review,
     vscode.workspace.registerTextDocumentContentProvider("open-settings-sync-preview", review),
+    vscode.languages.registerCodeLensProvider({ scheme: "open-settings-sync-preview" }, review),
+    vscode.commands.registerCommand("_openSettingsSync.applyPreview", (uri?: unknown) =>
+      review.respondToPreview(true, uri),
+    ),
+    vscode.commands.registerCommand("_openSettingsSync.cancelPreview", (uri?: unknown) =>
+      review.respondToPreview(false, uri),
+    ),
     {
       dispose() {
         for (const controller of running) {
@@ -117,7 +124,12 @@ export function activate(context: vscode.ExtensionContext): void {
           persistence: store,
           interaction: {
             resolve: (conflicts) => review.resolve(conflicts, signal),
-            review: (plan) => review.review(plan, source.editorProfile || "Default", signal),
+            review: (plan) => {
+              progress.report({
+                message: "Waiting for your review. In Preview, choose Apply Sync when ready.",
+              });
+              return review.review(plan, source.editorProfile || "Default", signal);
+            },
           },
           policy: {
             builtinExtensions: builtin.extensions,

@@ -1,4 +1,5 @@
 /** Binds the active window's user settings and the matching editor CLI profile. */
+import { randomUUID } from "node:crypto";
 import { basename, dirname } from "node:path";
 import * as vscode from "vscode";
 import type { FileStore, SettingsSource } from "../storage/files";
@@ -6,8 +7,20 @@ import { SyncFailure } from "../sync/failure";
 
 /** Opens the active profile's settings. A dirty or unsupported document cannot be used. */
 export async function openUserSettings(): Promise<vscode.TextDocument> {
-  await vscode.commands.executeCommand("workbench.action.openSettingsJson");
-  const document = vscode.window.activeTextEditor?.document;
+  // runCommands keeps the returned editor pane in the workbench. Its next command
+  // captures the active document only after the settings action succeeds.
+  let document: vscode.TextDocument | undefined;
+  const captureId = `_openSettingsSync.captureSettings.${randomUUID()}`;
+  const capture = vscode.commands.registerCommand(captureId, () => {
+    document = vscode.window.activeTextEditor?.document;
+  });
+  try {
+    await vscode.commands.executeCommand("runCommands", {
+      commands: ["workbench.action.openSettingsJson", captureId],
+    });
+  } finally {
+    capture.dispose();
+  }
   if (
     !document ||
     !["file", "vscode-userdata"].includes(document.uri.scheme) ||

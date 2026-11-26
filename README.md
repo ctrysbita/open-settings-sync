@@ -27,7 +27,7 @@ Open Settings Sync is manual-first and transparent: every synchronization shows 
 2. Run **Open Settings Sync: Configure** once per editor profile. Open Settings Sync opens the active profile's User Settings JSON to bind the source and uses the matching editor profile CLI to list and install extensions. Enter the exact display name for named profiles, or leave blank for the Default profile.
 3. Run **Open Settings Sync: Sync Now** (`openSettingsSync.sync`):
    - Resolve any setting or key-order conflicts if prompted.
-   - Choose **Preview** to inspect local setting changes, extension installations, and exact outbound Git values before confirming **Sync** or **Cancel**.
+   - Choose **Preview** to inspect local setting changes, extension installations, and outgoing Git values. Choose **Apply Sync** or **Cancel Sync** at the top of the preview. Closing the preview also cancels the sync.
 
 ## Configuration
 
@@ -40,11 +40,9 @@ Extension settings live under `openSettingsSync.*` to stay completely separate f
   "openSettingsSync.profile": "main",
   "openSettingsSync.ignoredSettings": [
     "workbench.colorTheme",
-    "myExtension.machine*"
+    "myExtension.machine*",
   ],
-  "openSettingsSync.ignoredExtensions": [
-    "company.private-extension"
-  ]
+  "openSettingsSync.ignoredExtensions": ["company.private-extension"],
 }
 ```
 
@@ -106,4 +104,4 @@ You can also set `VSCODE_SYNC_EDITOR` and run `npm run test:editor`.
 
 ## License
 
-Copyright © 2026 Jason C.H. Licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) (see `LICENSE.md`).
+Licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) (see [LICENSE.md](./LICENSE.md)).
