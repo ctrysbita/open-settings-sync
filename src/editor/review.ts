@@ -100,7 +100,9 @@ export class Review implements vscode.TextDocumentContentProvider, vscode.Dispos
       const detail =
         `Profile: ${editorProfile}. ${plan.settings.length} local setting changes, ${plan.installExtensions.length} extension installations.` +
         (plan.settingsOrder ? "\nReorder local settings." : "") +
-        (plan.upload ? `\nUpload ${plan.gitSettings.length} setting changes to Git.` : "") +
+        (plan.upload
+          ? `\nUpload ${plan.gitSettings.length} setting changes, ${plan.gitExtensions.length} extensions to Git.`
+          : "") +
         (plan.gitSettingsOrder ? "\nUpdate the setting order on Git." : "");
       const choice = await untilCancelled(
         this.choose(question, { modal: true, detail }, action, "Preview"),

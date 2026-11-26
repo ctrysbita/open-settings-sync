@@ -15,8 +15,8 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       vsix: ${{ steps.meta.outputs.vsix }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -53,7 +53,7 @@ jobs:
           VSIX: ${{ steps.meta.outputs.vsix }}
         run: sha256sum "$VSIX" > SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: |
@@ -67,7 +67,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets
       - name: Create or update GitHub Release
@@ -86,32 +86,28 @@ jobs:
   publish-marketplace:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets
       - name: Publish to VS Code Marketplace
         env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
           VSIX: ${{ needs.build.outputs.vsix }}
-        run: |
-          if [ -n "$VSCE_PAT" ]; then
-            npx --yes @vscode/vsce@4.1.1 publish --packagePath "$VSIX"
-          else
-            echo "::warning::VSCE_PAT is not configured; skipped Visual Studio Marketplace publish."
-          fi
+        run: npx --yes @vscode/vsce@4.1.1 publish --oidc --packagePath "$VSIX"
 
   publish-openvsx:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets
       - name: Publish to Open VSX Registry (Cursor / VSCodium)

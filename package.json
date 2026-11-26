@@ -35,9 +35,9 @@
   ],
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": false
+      "supported": true
     },
-    "virtualWorkspaces": false
+    "virtualWorkspaces": true
   },
   "main": "./dist/extension.js",
   "scripts": {

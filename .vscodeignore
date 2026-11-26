@@ -2,6 +2,7 @@
 .test-editor/**
 .github/**
 .vscode/**
+.gitattributes
 .gitignore
 .vscodeignore
 src/**
