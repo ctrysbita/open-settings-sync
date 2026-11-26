@@ -3,7 +3,7 @@
   "displayName": "Open Settings Sync",
   "description": "Sync portable user settings and user-installed extensions across VS Code and Cursor through Git.",
   "icon": "media/icon.png",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "ctrysbita",
   "license": "Apache-2.0",
   "homepage": "https://github.com/ctrysbita/open-settings-sync#readme",
